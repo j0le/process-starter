@@ -92,14 +92,14 @@ int main()
 	h_proc = OpenProcess(PROCESS_ALL_ACCESS, false, proc_id);
 
 	if (h_proc == nullptr) {
-		std::cout << "OpenProcess failed with" << std::hex << GetLastError() << std::endl;
+		std::cout << "OpenProcess failed with 0x" << std::hex << GetLastError() << std::endl;
 		return_value = 1;
 		goto end;
 	}
 
 
 	if (!OpenProcessToken(h_proc, access_required_for_CreateProcessAsUserW, &h_token)) {
-		std::cout << "OpenProcessToken failed with " << std::hex << GetLastError() << std::endl;
+		std::cout << "OpenProcessToken failed with 0x" << std::hex << GetLastError() << std::endl;
 		return_value = 1;
 		goto end;
 	}
@@ -138,7 +138,8 @@ int main()
 		/*[in]                LPSTARTUPINFOW        lpStartupInfo,       */ &startup_info,
 		/*[out]               LPPROCESS_INFORMATION lpProcessInformation */ &process_infos
 		)) {
-		std::cout << "CreateProcessAsUserW failed with " << std::hex << GetLastError() << std::endl;
+		std::cout << "CreateProcessAsUserW failed with 0x" << std::hex << GetLastError() << std::endl;
+		return_value = 1;
 		goto end;
 	}
 	CloseHandle(process_infos.hProcess);
