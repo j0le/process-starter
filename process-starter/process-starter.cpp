@@ -33,10 +33,14 @@
 
 #include <Windows.h>
 #include <TlHelp32.h>
-#include <iostream>
 #include <memory>
 #include <string>
 #include <type_traits>
+#include "process-starter/win32_helper.hpp"
+#include <nowide/iostream.hpp>
+
+
+namespace process_starter {
 
 DWORD GetProcId(const std::wstring_view procName) {
   DWORD procId = 0;
@@ -106,16 +110,14 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
   h_proc = OpenProcess(PROCESS_ALL_ACCESS, false, proc_id);
 
   if (h_proc == nullptr) {
-    std::cout << "OpenProcess failed with 0x" << std::hex << GetLastError()
-              << std::endl;
+    win32_helper::print_error_message(GetLastError(), "OpenProcess");
     return_value = result::FAIL;
     goto end;
   }
 
   if (!OpenProcessToken(h_proc, access_required_for_CreateProcessAsUserW,
                         &h_token)) {
-    std::cout << "OpenProcessToken failed with 0x" << std::hex << GetLastError()
-              << std::endl;
+    win32_helper::print_error_message(GetLastError(), "OpenProcessToken");
     return_value = result::FAIL;
     goto end;
   }
@@ -150,8 +152,7 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
           /*dwCreationFlags*/ CREATE_NEW_CONSOLE, /*lpEnvironment*/ nullptr,
           /*lpCurrentDirectory*/ nullptr, /*lpStartupInfo*/ &startup_info,
           /*lpProcessInformation*/ &process_infos)) {
-    std::cout << "CreateProcessAsUserW failed with 0x" << std::hex
-              << GetLastError() << std::endl;
+    win32_helper::print_error_message(GetLastError(), "CreateProcessAsUserW");
     return_value = result::FAIL;
     goto end;
   }
@@ -171,7 +172,7 @@ end:
 
 
 int main() {
-  std::cout << "let's go!" << std::endl;
+  nowide::cout << "let's go!" << std::endl;
   constexpr std::wstring_view proc_name_take_token = L"explorer.exe";
   constexpr std::wstring_view prog_to_call =
       LR"(C:\WINDOWS\system32\cmd.exe)";
@@ -186,14 +187,18 @@ int main() {
     Sleep(30);
   }
 
-  std::cout << "taking explorer.exe with PID: " << std::dec << proc_id
-            << std::endl;
+  nowide::cout << "taking explorer.exe with PID: " << std::dec << proc_id
+               << std::endl;
 
   if (result::FAIL ==
       start_process_via_OpenProcessToken(proc_id, prog_to_call, cmd_line))
     return 1;
 
-  std::cout << "It should have worked." << std::endl;
+  nowide::cout << "It should have worked." << std::endl;
 
   return 0;
 }
+
+} // end namespace process_starter
+
+int main() { return process_starter::main(); }
