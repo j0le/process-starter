@@ -1,0 +1,9 @@
+root = true
+
+# All files
+[*]
+
+
+[*.{cpp,hpp,c,h}]
+indent_style = space
+indent_size = 2
