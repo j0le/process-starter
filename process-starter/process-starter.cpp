@@ -34,7 +34,9 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <type_traits>
 
 DWORD GetProcId(const std::wstring_view procName) {
   DWORD procId = 0;
@@ -68,38 +70,45 @@ exit:
   return procId;
 }
 
-int main() {
+enum class result : bool { FAIL = false, SUCESS = true };
+
+// return value:
+//   true: success
+//   false: failure
+result start_process_via_OpenProcessToken(DWORD proc_id,
+                                          std::wstring_view prog_name,
+                                          std::wstring_view cmd_line) {
   constexpr DWORD access_required_for_CreateProcessAsUserW =
       TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY;
-  std::cout << "let's go!" << std::endl;
-  constexpr std::wstring_view proc_name_take_token = L"explorer.exe";
-  const wchar_t prog_to_call[] = LR"(C:\WINDOWS\system32\cmd.exe)";
-  wchar_t cmd_line[] = LR"(C:\WINDOWS\system32\cmd.exe)";
   wchar_t lpDesktop[] = L"";
-  int return_value = 0;
+  result return_value = result::SUCESS;
   HANDLE h_proc = nullptr;
   HANDLE h_token = nullptr;
   STARTUPINFOW startup_info;
   PROCESS_INFORMATION process_infos{};
+  std::wstring prog_name_str{prog_name};
+  std::unique_ptr<wchar_t[]> cmd_line_buf;
 
-  DWORD proc_id = 0;
+  {
+    static_assert(std::is_same_v<decltype(cmd_line)::value_type, wchar_t>);
+    const std::size_t size_with_terminating_null_in_wchars =
+        cmd_line.size() + 1;
 
-  while (true) {
-    proc_id = GetProcId(proc_name_take_token);
-    if (proc_id != 0)
-      break;
-    Sleep(30);
+    cmd_line_buf = std::make_unique<decltype(cmd_line)::value_type[]>(
+        size_with_terminating_null_in_wchars);
+
+    memcpy(cmd_line_buf.get(), cmd_line.data(),
+           (size_with_terminating_null_in_wchars - 1) * sizeof(wchar_t));
+
+    cmd_line_buf[size_with_terminating_null_in_wchars - 1] = L'\0';
   }
-
-  std::cout << "taking explorer.exe with PID: " << std::dec << proc_id
-            << std::endl;
 
   h_proc = OpenProcess(PROCESS_ALL_ACCESS, false, proc_id);
 
   if (h_proc == nullptr) {
     std::cout << "OpenProcess failed with 0x" << std::hex << GetLastError()
               << std::endl;
-    return_value = 1;
+    return_value = result::FAIL;
     goto end;
   }
 
@@ -107,7 +116,7 @@ int main() {
                         &h_token)) {
     std::cout << "OpenProcessToken failed with 0x" << std::hex << GetLastError()
               << std::endl;
-    return_value = 1;
+    return_value = result::FAIL;
     goto end;
   }
 
@@ -130,40 +139,25 @@ int main() {
                   .hStdOutput = nullptr,
                   .hStdError = nullptr};
 
+  // We set bInheritHandles to false, because we cannot inherit accross sessions
+  // (I don't know which sessions: LSA Logon Sessions, or Remote Desktop
+  // Sessions). And we also don't want to.
+
   if (!CreateProcessAsUserW(
-          /*[in, optional]      HANDLE                hToken,              */
-          h_token,
-          /*[in, optional]      LPCWSTR               lpApplicationName,   */
-          prog_to_call,
-          /*[in, out, optional] LPWSTR                lpCommandLine,       */
-          cmd_line,
-          /*[in, optional]      LPSECURITY_ATTRIBUTES lpProcessAttributes, */
-          nullptr,
-          /*[in, optional]      LPSECURITY_ATTRIBUTES lpThreadAttributes,  */
-          nullptr,
-          /*[in]                BOOL                  bInheritHandles,     */
-          false, // cannot inherit accross sessions (I don't know which sessions
-                 // (LSA Logon Sessions, or Remote Desktop Sessions). And we
-                 // also don't want to.
-          /*[in]                DWORD                 dwCreationFlags,     */
-          CREATE_NEW_CONSOLE,
-          /*[in, optional]      LPVOID                lpEnvironment,       */
-          nullptr,
-          /*[in, optional]      LPCWSTR               lpCurrentDirectory,  */
-          nullptr,
-          /*[in]                LPSTARTUPINFOW        lpStartupInfo,       */
-          &startup_info,
-          /*[out]               LPPROCESS_INFORMATION lpProcessInformation */
-          &process_infos)) {
+          /*hToken*/ h_token, /*lpApplicationName*/ prog_name_str.c_str(),
+          /*lpCommandLine*/ cmd_line_buf.get(), /*lpProcessAttributes*/ nullptr,
+          /*lpThreadAttributes*/ nullptr, /*bInheritHandles*/ false,
+          /*dwCreationFlags*/ CREATE_NEW_CONSOLE, /*lpEnvironment*/ nullptr,
+          /*lpCurrentDirectory*/ nullptr, /*lpStartupInfo*/ &startup_info,
+          /*lpProcessInformation*/ &process_infos)) {
     std::cout << "CreateProcessAsUserW failed with 0x" << std::hex
               << GetLastError() << std::endl;
-    return_value = 1;
+    return_value = result::FAIL;
     goto end;
   }
   CloseHandle(process_infos.hProcess);
   CloseHandle(process_infos.hThread);
 
-  std::cout << "It should have worked." << std::endl;
 
 end:
   if (h_token != nullptr)
@@ -172,4 +166,34 @@ end:
     CloseHandle(h_proc);
 
   return return_value;
+}
+
+
+
+int main() {
+  std::cout << "let's go!" << std::endl;
+  constexpr std::wstring_view proc_name_take_token = L"explorer.exe";
+  constexpr std::wstring_view prog_to_call =
+      LR"(C:\WINDOWS\system32\cmd.exe)";
+  constexpr std::wstring_view cmd_line = LR"(C:\WINDOWS\system32\cmd.exe)";
+
+  DWORD proc_id = 0;
+
+  while (true) {
+    proc_id = GetProcId(proc_name_take_token);
+    if (proc_id != 0)
+      break;
+    Sleep(30);
+  }
+
+  std::cout << "taking explorer.exe with PID: " << std::dec << proc_id
+            << std::endl;
+
+  if (result::FAIL ==
+      start_process_via_OpenProcessToken(proc_id, prog_to_call, cmd_line))
+    return 1;
+
+  std::cout << "It should have worked." << std::endl;
+
+  return 0;
 }
