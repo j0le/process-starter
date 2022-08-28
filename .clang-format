@@ -1,1 +1,19 @@
 BasedOnStyle: LLVM
+
+IncludeCategories:
+  - Regex:           '^<Windows.h>$'
+    Priority:        -2
+    CaseSensitive:   false
+
+  # other headers of the operating system
+  - Regex:           '.h>$'
+    Priority:        -1
+    CaseSensitive:   false
+
+  # C++ standard headers
+  - Regex:           '<[[:alnum:]]+>'
+    Priority:        3
+
+
+  #- Regex:           '.*'
+  #  Priority:        4
