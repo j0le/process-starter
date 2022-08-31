@@ -28,8 +28,27 @@
 // There are two types of sessions:
 // - LSA Logon Sessions
 //   https://docs.microsoft.com/en-us/windows/win32/secauthn/lsa-logon-sessions
-// - Remote Desktop Sessions
+// - Remote Desktop (RD) / Terminal Services (WTS) Sessions
 //   https://docs.microsoft.com/en-us/windows/win32/termserv/terminal-services-sessions
+
+// 2022-08-28 23:17
+// new Plan:
+// - get token of a process
+// - (duplicate token with DuplicateTokenEx, because we don't want to change the token of an existing process. I don't know, if this is needed.)
+// - Set the WTS Session of the Token with SetTokenInformation
+// - do something with window stations and desktops
+// ...
+//
+// more info:
+// > If TokenSessionId is set with SetTokenInformation, the application must
+// > have the Act As Part Of the Operating System privilege, and the application
+// > must be enabled to set the session ID in a token.
+// 
+// from https://docs.microsoft.com/en-us/windows/win32/api/winnt/ne-winnt-token_information_class
+//
+// - "Act As Part Of the Operating System privilege" is SeTcbPrivilege
+// - DuplicateTokenEx not only creates a new handle, but also a new token object.
+
 
 #include <Windows.h>
 #include <TlHelp32.h>
