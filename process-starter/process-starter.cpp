@@ -57,23 +57,29 @@
 #include <type_traits>
 #include "process-starter/win32_helper.hpp"
 #include <nowide/iostream.hpp>
+#include <nowide/args.hpp>
+#include <sstream>
 
 
 namespace process_starter {
 
-DWORD GetProcId(const std::wstring_view procName) {
+DWORD GetProcId(const std::string_view procName_utf8) {
+
+  std::wstring procName = nowide::widen(procName_utf8);
   DWORD procId = 0;
   HANDLE hSnap = nullptr;
   PROCESSENTRY32 procEntry{};
   procEntry.dwSize = sizeof(procEntry);
 
-  if (procName.data()[procName.length() - 1 + 1] != L'\0')
-    goto exit;
+  assert(procName.data()[procName.length() - 1 + 1] == L'\0');
 
   hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 
-  if (hSnap == INVALID_HANDLE_VALUE)
+  if (hSnap == INVALID_HANDLE_VALUE) {
+    nowide::cout << "Cannot create snapshot of process list" << std::endl;
+    std::exit(1);
     goto exit;
+  }
 
   if (!Process32FirstW(hSnap, &procEntry))
     goto close_hSnap;
@@ -188,25 +194,108 @@ end:
   return return_value;
 }
 
+std::pair<result,uint32_t> string_to_uint32(const std::string_view& str) {
+  if (str.empty() || str.size() >= 11)
+    return {result::FAIL, 0};
+
+  static_assert(sizeof(uint32_t) == 4);
+  // 2^32 == 4'294'967'296
+  const uint32_t max_number_digits[10] = {4,2,9,4,9,6,7,2,9,6};
+
+  bool must_check_for_max_num = str.size() == 10;
+  unsigned index = 0;
+
+  uint32_t out_number = 0;
+  for (char c : str) {
+    static_assert('0' < '9');
+    if (c < '0' || c > '9')
+      return {result::FAIL, 0};
+
+    uint32_t digit = c - '0';
+    if (must_check_for_max_num) {
+      auto max_num_digit = max_number_digits[index];
+      ++index;
+      if (digit > max_num_digit)
+        return {result::FAIL, 0};
+      if (digit < max_num_digit)
+        must_check_for_max_num = false;
+    }
+
+    out_number *= 10;
+    out_number += digit;
+  }
+  return {result::SUCESS, out_number};
+}
 
 
-int main() {
-  nowide::cout << "let's go!" << std::endl;
-  constexpr std::wstring_view proc_name_take_token = L"explorer.exe";
-  constexpr std::wstring_view prog_to_call =
-      LR"(C:\WINDOWS\system32\cmd.exe)";
-  constexpr std::wstring_view cmd_line = LR"(C:\WINDOWS\system32\cmd.exe)";
+int main(int argc, char **argv) {
+  nowide::args args(argc, argv);
 
   DWORD proc_id = 0;
+  bool proc_id_set = false;
 
-  while (true) {
-    proc_id = GetProcId(proc_name_take_token);
-    if (proc_id != 0)
-      break;
-    Sleep(30);
+  std::string prog_name_take_token_from{"explorer.exe"};
+  bool prog_name_take_token_from_set = false;
+
+  constexpr std::string_view OPT_PID{"--pid"};
+  constexpr std::string_view OPT_PROGFROM("--process-copy-from");
+
+  for (int i = 1; i < argc; i++) {
+    bool next_available = i + 1 < argc;
+    if (OPT_PID == argv[i]) {
+      if (next_available) {
+        uint32_t number = 0;
+        result res = result::FAIL;
+        auto next_arg = argv[++i];
+        std::tie(res, number) = string_to_uint32(next_arg);
+        if (res == result::FAIL) {
+          nowide::cout << "argument \"" << next_arg << "\" for \"" << OPT_PID
+                       << "\" cannot be interpreted as a 32 bit number"
+                       << std::endl;
+          return 1;
+        }
+        proc_id_set = true;
+        proc_id = number;
+      } else {
+        nowide::cout << "argument missing for \"" << OPT_PID << "\""
+                     << std::endl;
+        return 1;
+      }
+    } else if (OPT_PROGFROM == argv[i]) {
+      if (next_available) {
+        prog_name_take_token_from = argv[++i];
+      } else {
+        nowide::cout << "argument missing for \"" << OPT_PROGFROM << "\""
+                     << std::endl;
+        return 1;
+      }
+    }
   }
 
-  nowide::cout << "taking explorer.exe with PID: " << std::dec << proc_id
+  nowide::cout << "let's go!" << std::endl;
+  constexpr std::wstring_view prog_to_call = LR"(C:\WINDOWS\system32\cmd.exe)";
+  constexpr std::wstring_view cmd_line = LR"(C:\WINDOWS\system32\cmd.exe)";
+
+  if (proc_id_set && prog_name_take_token_from_set) {
+    nowide::cout << "The options \"" << OPT_PID << "\" and \"" << OPT_PROGFROM
+                 << "\" are mutally exclusive. You cannot specifiy both.\n"
+                 << std::flush;
+    return 1;
+  }
+
+  if (!proc_id_set) {
+    nowide::cout << "Searching for process with name \""
+                 << prog_name_take_token_from << "\".\n"
+                 << std::flush;
+    while (true) {
+      proc_id = GetProcId(prog_name_take_token_from);
+      if (proc_id != 0)
+        break;
+      Sleep(30);
+    }
+  }
+
+  nowide::cout << "taking process with PID: " << std::dec << proc_id
                << std::endl;
 
   if (result::FAIL ==
@@ -220,4 +309,4 @@ int main() {
 
 } // end namespace process_starter
 
-int main() { return process_starter::main(); }
+int main(int argc, char **argv) { return process_starter::main(argc, argv); }
