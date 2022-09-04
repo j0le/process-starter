@@ -59,6 +59,7 @@
 #include <nowide/iostream.hpp>
 #include <nowide/args.hpp>
 #include <sstream>
+#include <optional>
 
 
 namespace process_starter {
@@ -99,40 +100,59 @@ exit:
   return procId;
 }
 
-enum class result : bool { FAIL = false, SUCESS = true };
+enum class result : bool { FAIL = false, SUCCESS = true };
 
 // return value:
 //   true: success
 //   false: failure
 result start_process_via_OpenProcessToken(DWORD proc_id,
-                                          std::wstring_view prog_name,
-                                          std::wstring_view cmd_line) {
+                                          std::optional<std::string_view> prog_name,
+                                          std::optional<std::string_view> cmd_line) {
   constexpr DWORD access_required_for_CreateProcessAsUserW =
       TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY;
   wchar_t lpDesktop[] = L"";
-  result return_value = result::SUCESS;
+  result return_value = result::SUCCESS;
   HANDLE h_proc = nullptr;
   HANDLE h_token = nullptr;
   STARTUPINFOW startup_info;
   PROCESS_INFORMATION process_infos{};
-  std::wstring prog_name_str{prog_name};
-  std::unique_ptr<wchar_t[]> cmd_line_buf;
+  std::wstring prog_name_wstr;
+  const wchar_t *prog_name_const_w_str_ptr = nullptr;
+  std::unique_ptr<wchar_t[]> cmd_line_buf{nullptr};
 
-  {
-    static_assert(std::is_same_v<decltype(cmd_line)::value_type, wchar_t>);
+  if (!prog_name.has_value() && !cmd_line.has_value()) {
+    nowide::cout << "Error: Neither prog_name, nor cmd_line has a value.\n"
+                 << std::flush;
+    return_value = result::FAIL;
+    goto end;
+  }
+
+  if (prog_name.has_value()) {
+    prog_name_wstr = nowide::widen(*prog_name);
+    prog_name_const_w_str_ptr = prog_name_wstr.c_str();
+  }
+
+  if (cmd_line.has_value()) {
+    auto cmd_line_wstr = nowide::widen(*cmd_line);
+    static_assert(std::is_same_v<decltype(cmd_line_wstr)::value_type, wchar_t>);
     const std::size_t size_with_terminating_null_in_wchars =
-        cmd_line.size() + 1;
+        cmd_line_wstr.size() + 1;
 
-    cmd_line_buf = std::make_unique<decltype(cmd_line)::value_type[]>(
+    cmd_line_buf = std::make_unique<wchar_t[]>(
         size_with_terminating_null_in_wchars);
 
-    memcpy(cmd_line_buf.get(), cmd_line.data(),
+    memcpy(cmd_line_buf.get(), cmd_line_wstr.data(),
            (size_with_terminating_null_in_wchars - 1) * sizeof(wchar_t));
 
     cmd_line_buf[size_with_terminating_null_in_wchars - 1] = L'\0';
   }
 
-  h_proc = OpenProcess(PROCESS_ALL_ACCESS, false, proc_id);
+
+  if (proc_id == 0) {
+    h_proc = GetCurrentProcess();
+  } else {
+    h_proc = OpenProcess(PROCESS_ALL_ACCESS, false, proc_id);
+  }
 
   if (h_proc == nullptr) {
     win32_helper::print_error_message(GetLastError(), "OpenProcess");
@@ -171,7 +191,7 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
   // Sessions). And we also don't want to.
 
   if (!CreateProcessAsUserW(
-          /*hToken*/ h_token, /*lpApplicationName*/ prog_name_str.c_str(),
+          /*hToken*/ h_token, /*lpApplicationName*/ prog_name_const_w_str_ptr,
           /*lpCommandLine*/ cmd_line_buf.get(), /*lpProcessAttributes*/ nullptr,
           /*lpThreadAttributes*/ nullptr, /*bInheritHandles*/ false,
           /*dwCreationFlags*/ CREATE_NEW_CONSOLE, /*lpEnvironment*/ nullptr,
@@ -224,7 +244,7 @@ std::pair<result,uint32_t> string_to_uint32(const std::string_view& str) {
     out_number *= 10;
     out_number += digit;
   }
-  return {result::SUCESS, out_number};
+  return {result::SUCCESS, out_number};
 }
 
 
@@ -234,11 +254,15 @@ int main(int argc, char **argv) {
   DWORD proc_id = 0;
   bool proc_id_set = false;
 
-  std::string prog_name_take_token_from{"explorer.exe"};
-  bool prog_name_take_token_from_set = false;
+  std::optional<std::string_view> prog_name_take_token_from{std::nullopt};
+  std::optional<std::string_view> program_name{std::nullopt};
+  std::optional<std::string_view> cmd_line{std::nullopt};
 
   constexpr std::string_view OPT_PID{"--pid"};
   constexpr std::string_view OPT_PROGFROM("--process-copy-from");
+  constexpr std::string_view OPT_PROGNAME{"--program-name"};
+  constexpr std::string_view OPT_CMDLINE{"--cmd-line"};
+
 
   for (int i = 1; i < argc; i++) {
     bool next_available = i + 1 < argc;
@@ -263,20 +287,37 @@ int main(int argc, char **argv) {
       }
     } else if (OPT_PROGFROM == argv[i]) {
       if (next_available) {
-        prog_name_take_token_from = argv[++i];
+        prog_name_take_token_from.emplace(argv[++i]);
       } else {
         nowide::cout << "argument missing for \"" << OPT_PROGFROM << "\""
                      << std::endl;
         return 1;
       }
+    } else if (OPT_PROGNAME == argv[i]) {
+      if (next_available) {
+        program_name.emplace(argv[++i]);
+      } else {
+        nowide::cout << "argument missing for \"" << OPT_PROGNAME << "\""
+                     << std::endl;
+        return 1;
+      }
+    } else if (OPT_CMDLINE == argv[i]) {
+      if (next_available) {
+        cmd_line.emplace(argv[++i]);
+      } else {
+        nowide::cout << "argument missing for \"" << OPT_CMDLINE << "\""
+                     << std::endl;
+        return 1;
+      }
+    } else {
+      nowide::cout << "unhandled argument: \"" << argv[i] << "\"." << std::endl;
+      return 1;
     }
   }
 
   nowide::cout << "let's go!" << std::endl;
-  constexpr std::wstring_view prog_to_call = LR"(C:\WINDOWS\system32\cmd.exe)";
-  constexpr std::wstring_view cmd_line = LR"(C:\WINDOWS\system32\cmd.exe)";
 
-  if (proc_id_set && prog_name_take_token_from_set) {
+  if (proc_id_set && prog_name_take_token_from.has_value()) {
     nowide::cout << "The options \"" << OPT_PID << "\" and \"" << OPT_PROGFROM
                  << "\" are mutally exclusive. You cannot specifiy both.\n"
                  << std::flush;
@@ -284,11 +325,12 @@ int main(int argc, char **argv) {
   }
 
   if (!proc_id_set) {
+    std::string_view pn = prog_name_take_token_from.value_or("explorer.exe");
     nowide::cout << "Searching for process with name \""
-                 << prog_name_take_token_from << "\".\n"
+                 << pn << "\".\n"
                  << std::flush;
     while (true) {
-      proc_id = GetProcId(prog_name_take_token_from);
+      proc_id = GetProcId(pn);
       if (proc_id != 0)
         break;
       Sleep(30);
@@ -299,7 +341,7 @@ int main(int argc, char **argv) {
                << std::endl;
 
   if (result::FAIL ==
-      start_process_via_OpenProcessToken(proc_id, prog_to_call, cmd_line))
+      start_process_via_OpenProcessToken(proc_id, program_name, cmd_line))
     return 1;
 
   nowide::cout << "It should have worked." << std::endl;
