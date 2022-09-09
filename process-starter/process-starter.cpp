@@ -104,9 +104,7 @@ exit:
 
 enum class result : bool { FAIL = false, SUCCESS = true };
 
-// return value:
-//   true: success
-//   false: failure
+
 result start_process_via_OpenProcessToken(DWORD proc_id,
                                           std::optional<std::string_view> prog_name,
                                           std::optional<std::string_view> cmd_line) {
