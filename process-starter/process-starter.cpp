@@ -112,6 +112,7 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
                                           std::optional<std::string_view> cmd_line) {
   constexpr DWORD access_required_for_CreateProcessAsUserW =
       TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY;
+  //constexpr DWORD access_required_for_CreateProcessAsUserW = MAXIMUM_ALLOWED;
   wchar_t lpDesktop[] = L"";
   result return_value = result::SUCCESS;
   HANDLE h_proc = nullptr;
@@ -153,7 +154,7 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
   if (proc_id == 0) {
     h_proc = GetCurrentProcess();
   } else {
-    h_proc = OpenProcess(PROCESS_ALL_ACCESS, false, proc_id);
+    h_proc = OpenProcess(MAXIMUM_ALLOWED, false, proc_id);
   }
 
   if (h_proc == nullptr) {
