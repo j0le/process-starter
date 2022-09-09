@@ -60,6 +60,8 @@
 #include <nowide/args.hpp>
 #include <sstream>
 #include <optional>
+#include <thread>
+#include <chrono>
 
 
 namespace process_starter {
@@ -253,6 +255,7 @@ int main(int argc, char **argv) {
 
   DWORD proc_id = 0;
   bool proc_id_set = false;
+  bool debug = false;
 
   std::optional<std::string_view> prog_name_take_token_from{std::nullopt};
   std::optional<std::string_view> program_name{std::nullopt};
@@ -262,6 +265,7 @@ int main(int argc, char **argv) {
   constexpr std::string_view OPT_PROGFROM("--process-copy-from");
   constexpr std::string_view OPT_PROGNAME{"--program-name"};
   constexpr std::string_view OPT_CMDLINE{"--cmd-line"};
+  constexpr std::string_view OPT_DEBUG{"--debug"};
 
 
   for (int i = 1; i < argc; i++) {
@@ -309,10 +313,20 @@ int main(int argc, char **argv) {
                      << std::endl;
         return 1;
       }
+    } else if (OPT_DEBUG == argv[i]) {
+      debug = true;
     } else {
       nowide::cout << "unhandled argument: \"" << argv[i] << "\"." << std::endl;
       return 1;
     }
+  }
+
+  if (debug) {
+    using namespace std::chrono_literals;
+    while (!IsDebuggerPresent()) {
+      std::this_thread::sleep_for(10ms);
+    }
+    DebugBreak();
   }
 
   nowide::cout << "let's go!" << std::endl;
