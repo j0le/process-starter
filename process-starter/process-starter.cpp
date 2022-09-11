@@ -115,11 +115,13 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
   result return_value = result::SUCCESS;
   HANDLE h_proc = nullptr;
   HANDLE h_token = nullptr;
+  HANDLE h_duplicated_token = nullptr;
   STARTUPINFOW startup_info;
   PROCESS_INFORMATION process_infos{};
   std::wstring prog_name_wstr;
   const wchar_t *prog_name_const_w_str_ptr = nullptr;
   std::unique_ptr<wchar_t[]> cmd_line_buf{nullptr};
+  decltype(WTSGetActiveConsoleSessionId()) active_console_session_id = 0;
 
   if (!prog_name.has_value() && !cmd_line.has_value()) {
     nowide::cout << "Error: Neither prog_name, nor cmd_line has a value.\n"
@@ -168,6 +170,37 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
     goto end;
   }
 
+  if (!DuplicateTokenEx(h_token, MAXIMUM_ALLOWED, nullptr,
+                        SECURITY_IMPERSONATION_LEVEL::SecurityDelegation,
+                        TOKEN_TYPE::TokenPrimary, &h_duplicated_token)) {
+    win32_helper::print_error_message(GetLastError(), "DoplicateTokenEx");
+    return_value = result::FAIL;
+    goto end;
+  }
+  // close original Handle, because we don't need it anymore
+  CloseHandle(h_token);
+  h_token = nullptr;
+  h_token = h_duplicated_token; // move new handle value to variable of old handle
+  h_duplicated_token = nullptr;
+
+  active_console_session_id = WTSGetActiveConsoleSessionId();
+  if (0xFFFFFFFF == active_console_session_id) {
+    nowide::cout << "Error: There is no active console session right now.\n"
+                 << std::flush;
+    return_value = result::FAIL;
+    goto end;
+  }
+
+  nowide::cout << "The ID of the active console session is "
+               << active_console_session_id << "\n"
+               << std::flush;
+
+  if (!SetTokenInformation(h_token, TOKEN_INFORMATION_CLASS::TokenSessionId, &active_console_session_id,sizeof(active_console_session_id))) {
+    win32_helper::print_error_message(GetLastError(), "SetTokenInformation");
+    return_value = result::FAIL;
+    goto end;
+  }
+
   startup_info = {.cb = sizeof(startup_info),
                   .lpReserved = nullptr,
                   .lpDesktop = lpDesktop,
@@ -207,6 +240,8 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
 
 
 end:
+  if (h_duplicated_token != nullptr)
+    CloseHandle(h_duplicated_token);
   if (h_token != nullptr)
     CloseHandle(h_token);
   if (h_proc != nullptr)
