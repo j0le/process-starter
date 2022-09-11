@@ -62,6 +62,7 @@
 #include <optional>
 #include <thread>
 #include <chrono>
+#include <variant>
 
 
 namespace process_starter {
@@ -104,10 +105,20 @@ exit:
 
 enum class result : bool { FAIL = false, SUCCESS = true };
 
+namespace change_session {
+typedef DWORD session_id_t;
+static_assert(
+    std::is_same_v<decltype(WTSGetActiveConsoleSessionId()), session_id_t>);
+struct active_console_session {};
+struct dont_change_session {};
+typedef std::variant<session_id_t, active_console_session, dont_change_session>
+    var;
+}// end namespace change_session
 
 result start_process_via_OpenProcessToken(DWORD proc_id,
                                           std::optional<std::string_view> prog_name,
-                                          std::optional<std::string_view> cmd_line) {
+                                          std::optional<std::string_view> cmd_line,
+                                          change_session::var change_sess) {
   constexpr DWORD access_required_for_CreateProcessAsUserW =
       TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY;
   //constexpr DWORD access_required_for_CreateProcessAsUserW = MAXIMUM_ALLOWED;
@@ -170,35 +181,48 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
     goto end;
   }
 
-  if (!DuplicateTokenEx(h_token, MAXIMUM_ALLOWED, nullptr,
-                        SECURITY_IMPERSONATION_LEVEL::SecurityDelegation,
-                        TOKEN_TYPE::TokenPrimary, &h_duplicated_token)) {
-    win32_helper::print_error_message(GetLastError(), "DoplicateTokenEx");
-    return_value = result::FAIL;
-    goto end;
-  }
-  // close original Handle, because we don't need it anymore
-  CloseHandle(h_token);
-  h_token = nullptr;
-  h_token = h_duplicated_token; // move new handle value to variable of old handle
-  h_duplicated_token = nullptr;
+  if (!std::holds_alternative<change_session::dont_change_session>(
+          change_sess)) {
+    if (std::holds_alternative<change_session::active_console_session>(
+            change_sess)) {
 
-  active_console_session_id = WTSGetActiveConsoleSessionId();
-  if (0xFFFFFFFF == active_console_session_id) {
-    nowide::cout << "Error: There is no active console session right now.\n"
+      active_console_session_id = WTSGetActiveConsoleSessionId();
+      if (0xFFFFFFFF == active_console_session_id) {
+        nowide::cout << "Error: There is no active console session right now.\n"
+                     << std::flush;
+        return_value = result::FAIL;
+        goto end;
+      }
+    } else {
+      active_console_session_id =
+          std::get<change_session::session_id_t>(change_sess);
+    }
+
+    nowide::cout << "The ID of the active console session is "
+                 << active_console_session_id << "\n"
                  << std::flush;
-    return_value = result::FAIL;
-    goto end;
-  }
 
-  nowide::cout << "The ID of the active console session is "
-               << active_console_session_id << "\n"
-               << std::flush;
+    if (!DuplicateTokenEx(h_token, MAXIMUM_ALLOWED, nullptr,
+                          SECURITY_IMPERSONATION_LEVEL::SecurityDelegation,
+                          TOKEN_TYPE::TokenPrimary, &h_duplicated_token)) {
+      win32_helper::print_error_message(GetLastError(), "DoplicateTokenEx");
+      return_value = result::FAIL;
+      goto end;
+    }
+    // close original Handle, because we don't need it anymore
+    CloseHandle(h_token);
+    h_token = nullptr;
+    // move new handle value to variable of old handle
+    h_token = h_duplicated_token;
+    h_duplicated_token = nullptr;
 
-  if (!SetTokenInformation(h_token, TOKEN_INFORMATION_CLASS::TokenSessionId, &active_console_session_id,sizeof(active_console_session_id))) {
-    win32_helper::print_error_message(GetLastError(), "SetTokenInformation");
-    return_value = result::FAIL;
-    goto end;
+    if (!SetTokenInformation(h_token, TOKEN_INFORMATION_CLASS::TokenSessionId,
+                             &active_console_session_id,
+                             sizeof(active_console_session_id))) {
+      win32_helper::print_error_message(GetLastError(), "SetTokenInformation");
+      return_value = result::FAIL;
+      goto end;
+    }
   }
 
   startup_info = {.cb = sizeof(startup_info),
@@ -294,12 +318,14 @@ int main(int argc, char **argv) {
   std::optional<std::string_view> prog_name_take_token_from{std::nullopt};
   std::optional<std::string_view> program_name{std::nullopt};
   std::optional<std::string_view> cmd_line{std::nullopt};
+  change_session::var change_sess{change_session::dont_change_session{}};
 
   constexpr std::string_view OPT_PID{"--pid"};
   constexpr std::string_view OPT_PROGFROM("--process-copy-from");
   constexpr std::string_view OPT_PROGNAME{"--program-name"};
   constexpr std::string_view OPT_CMDLINE{"--cmd-line"};
   constexpr std::string_view OPT_DEBUG{"--debug"};
+  constexpr std::string_view OPT_WT_SESSION{"--wt-session"};
 
   constexpr std::string_view quote_open{"\xC2\xBB"};  // >> U+00BB
   constexpr std::string_view quote_close{"\xC2\xAB"}; // << U+00AB
@@ -349,6 +375,39 @@ int main(int argc, char **argv) {
                      << std::endl;
         return 1;
       }
+    } else if (OPT_WT_SESSION == argv[i]) {
+      if (next_available) {
+        ++i;
+        if (std::string_view{"active"} == argv[i]) {
+          change_sess = change_session::active_console_session{};
+        } else if (std::string_view{"not-specified"} == argv[i]) {
+          change_sess = change_session::dont_change_session{};
+        } else {
+          uint32_t number = 0;
+          result res = result::FAIL;
+          std::tie(res, number) = string_to_uint32(argv[i]);
+
+          static_assert(std::is_unsigned_v<change_session::session_id_t> &&
+                        std::is_unsigned_v<decltype(number)> &&
+                        sizeof(number) == sizeof(change_session::session_id_t));
+
+          if (res == result::FAIL) {
+            nowide::cout << "Error: value for option " << quote_open
+                         << OPT_WT_SESSION << quote_close << " is neither "
+                         << quote_open << "active" << quote_close << " nor "
+                         << quote_open << "not-specified" << quote_close
+                         << "nor a number,\n"
+                         << std::flush;
+            return 1;
+          } else {
+            change_sess = change_session::session_id_t{number};
+          }
+        }
+      } else {
+        nowide::cout << "argument missing for \"" << OPT_WT_SESSION << "\""
+                     << std::endl;
+        return 1;
+      }
     } else if (OPT_DEBUG == argv[i]) {
       debug = true;
     } else {
@@ -391,7 +450,7 @@ int main(int argc, char **argv) {
                << std::endl;
 
   if (result::FAIL ==
-      start_process_via_OpenProcessToken(proc_id, program_name, cmd_line))
+      start_process_via_OpenProcessToken(proc_id, program_name, cmd_line, change_sess))
     return 1;
 
   nowide::cout << "It should have worked." << std::endl;
