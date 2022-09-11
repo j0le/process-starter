@@ -301,6 +301,8 @@ int main(int argc, char **argv) {
   constexpr std::string_view OPT_CMDLINE{"--cmd-line"};
   constexpr std::string_view OPT_DEBUG{"--debug"};
 
+  constexpr std::string_view quote_open{"\xC2\xBB"};  // >> U+00BB
+  constexpr std::string_view quote_close{"\xC2\xAB"}; // << U+00AB
 
   for (int i = 1; i < argc; i++) {
     bool next_available = i + 1 < argc;
@@ -350,7 +352,7 @@ int main(int argc, char **argv) {
     } else if (OPT_DEBUG == argv[i]) {
       debug = true;
     } else {
-      nowide::cout << "unhandled argument: \"" << argv[i] << "\"." << std::endl;
+      nowide::cout << "unhandled argument: " << quote_open << argv[i] << quote_close << "." << std::endl;
       return 1;
     }
   }
