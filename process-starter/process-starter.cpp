@@ -63,6 +63,7 @@
 #include <thread>
 #include <chrono>
 #include <variant>
+#include <type_traits>
 
 
 namespace process_starter {
@@ -104,6 +105,84 @@ exit:
 }
 
 enum class result : bool { FAIL = false, SUCCESS = true };
+
+
+result EnableSeTakeOwnershipPrivilege() {
+  result return_value{result::SUCCESS};
+  HANDLE h_current_Process{nullptr};
+  HANDLE h_current_process_token{nullptr};
+  LUID luidSeTakeOwnershipPrivilege{};
+  TOKEN_PRIVILEGES tp{};
+  decltype(GetLastError()) last_error{0};
+
+  constexpr const bool use_complicated_way = true;
+  if (use_complicated_way) {
+    h_current_Process =
+        OpenProcess(PROCESS_ALL_ACCESS, false, GetCurrentProcessId());
+    if (h_current_Process == INVALID_HANDLE_VALUE ||
+        h_current_Process == nullptr) {
+      win32_helper::print_error_message(GetLastError(), "OpenProcess");
+      return_value = result::FAIL;
+      goto end;
+    }
+    if (!OpenProcessToken(h_current_Process,
+                          TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                          &h_current_process_token) ||
+        h_current_process_token == nullptr) {
+      win32_helper::print_error_message(GetLastError(), "OpenProcessToken");
+      return_value = result::FAIL;
+      goto end;
+    }
+
+    CloseHandle(h_current_Process);
+    h_current_Process = nullptr;
+
+  } else {
+    h_current_process_token = GetCurrentProcessToken();
+  }
+
+  static_assert(
+      std::is_same_v<
+          decltype(SE_TAKE_OWNERSHIP_NAME),
+          const wchar_t(&)[sizeof(SE_TAKE_OWNERSHIP_NAME) / sizeof(wchar_t)]>,
+      "SE_TAKE_OWNERSHIP_NAME must be a wide string literal, because we use "
+      "LookupPrivilegeValueW with the W suffix");
+  if (!LookupPrivilegeValueW(nullptr, SE_TAKE_OWNERSHIP_NAME,
+                             &luidSeTakeOwnershipPrivilege)) {
+    win32_helper::print_error_message(GetLastError(), "LookupPrivilegeValueW");
+    return_value = result::FAIL;
+    goto end;
+  }
+
+  tp.PrivilegeCount = 1;
+  tp.Privileges[0].Luid = luidSeTakeOwnershipPrivilege;
+  tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+  if (!AdjustTokenPrivileges(h_current_process_token, false, &tp, 0, nullptr,
+                             nullptr) ||
+      (last_error = GetLastError()) != ERROR_SUCCESS) {
+    win32_helper::print_error_message(last_error, "AdjustTokenPrivileges");
+    return_value = result::FAIL;
+    goto end;
+  }
+
+end:
+  if (h_current_Process != nullptr)
+    CloseHandle(h_current_Process);
+  if (h_current_process_token != nullptr)
+    CloseHandle(h_current_process_token);
+
+  return return_value;
+}
+
+result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE hToken) {
+  if (result::FAIL == EnableSeTakeOwnershipPrivilege())
+    return result::FAIL;
+  // TODO: Open token with WRITE_OWNER
+  // TODO: overwrite owner with current user
+  // TODO: reopen token with READ_CONTROL | WRITE_DAC
+  // TODO: read permissions, modify permissions, so that the current user has access
+  return result::FAIL; // temp
+}
 
 namespace change_session {
 typedef DWORD session_id_t;
@@ -174,11 +253,14 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
     goto end;
   }
 
-  if (!OpenProcessToken(h_proc, access_required_for_CreateProcessAsUserW,
+  if (!OpenProcessToken(h_proc, TOKEN_DUPLICATE,
                         &h_token)) {
     win32_helper::print_error_message(GetLastError(), "OpenProcessToken");
-    return_value = result::FAIL;
-    goto end;
+    if (result::FAIL == TakeOwnerShipOfProcessTokenAndAsignFullAccess(h_proc,&h_token)) {
+
+      return_value = result::FAIL;
+      goto end;
+    }
   }
 
   if (!std::holds_alternative<change_session::dont_change_session>(
@@ -205,7 +287,7 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
     if (!DuplicateTokenEx(h_token, MAXIMUM_ALLOWED, nullptr,
                           SECURITY_IMPERSONATION_LEVEL::SecurityDelegation,
                           TOKEN_TYPE::TokenPrimary, &h_duplicated_token)) {
-      win32_helper::print_error_message(GetLastError(), "DoplicateTokenEx");
+      win32_helper::print_error_message(GetLastError(), "DuplicateTokenEx");
       return_value = result::FAIL;
       goto end;
     }
