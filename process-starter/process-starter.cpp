@@ -66,6 +66,23 @@
 #include <type_traits>
 
 
+namespace helper_std {
+// https://youtu.be/pbkQG09grFw?t=1442
+// https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2022/p2590r2.pdf
+#if !defined(__cpp_lib_start_lifetime_at)
+static_assert(__cplusplus == _MSVC_LANG);
+static_assert(__cplusplus >= 202002L);
+template <typename T> T *start_lifetime_as(void *p) noexcept {
+  const auto bytes = new (p) std::byte[sizeof(T)];
+  const auto ptr = reinterpret_cast<T *>(bytes);
+  (void)*ptr;
+  return ptr;
+}
+#else
+  #error Use std::start_lifetime_as instead of helper_std::start_lifetime_as
+#endif
+}
+
 namespace process_starter {
 
 DWORD GetProcId(const std::string_view procName_utf8) {
@@ -107,39 +124,47 @@ exit:
 enum class result : bool { FAIL = false, SUCCESS = true };
 
 
-result EnableSeTakeOwnershipPrivilege() {
+result EnableSeTakeOwnershipPrivilegeAndGetUser(PTOKEN_USER* ppTokenUser) {
   result return_value{result::SUCCESS};
   HANDLE h_current_Process{nullptr};
   HANDLE h_current_process_token{nullptr};
   LUID luidSeTakeOwnershipPrivilege{};
   TOKEN_PRIVILEGES tp{};
+  PTOKEN_USER pTU{nullptr};
+  DWORD dw_required_size{0};
   decltype(GetLastError()) last_error{0};
 
-  constexpr const bool use_complicated_way = true;
-  if (use_complicated_way) {
-    h_current_Process =
-        OpenProcess(PROCESS_ALL_ACCESS, false, GetCurrentProcessId());
-    if (h_current_Process == INVALID_HANDLE_VALUE ||
-        h_current_Process == nullptr) {
-      win32_helper::print_error_message(GetLastError(), "OpenProcess");
-      return_value = result::FAIL;
-      goto end;
-    }
-    if (!OpenProcessToken(h_current_Process,
-                          TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
-                          &h_current_process_token) ||
-        h_current_process_token == nullptr) {
-      win32_helper::print_error_message(GetLastError(), "OpenProcessToken");
-      return_value = result::FAIL;
-      goto end;
-    }
-
-    CloseHandle(h_current_Process);
-    h_current_Process = nullptr;
-
-  } else {
-    h_current_process_token = GetCurrentProcessToken();
+  if (ppTokenUser == nullptr) {
+    return_value = result::FAIL;
+    goto end;
   }
+
+  h_current_Process =
+      OpenProcess(PROCESS_ALL_ACCESS, false, GetCurrentProcessId());
+  if (h_current_Process == INVALID_HANDLE_VALUE ||
+      h_current_Process == nullptr) {
+    win32_helper::print_error_message(GetLastError(), "OpenProcess");
+    return_value = result::FAIL;
+    goto end;
+  }
+  if (!OpenProcessToken(h_current_Process,
+                        TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                        &h_current_process_token) ||
+      h_current_process_token == nullptr) {
+    win32_helper::print_error_message(GetLastError(), "OpenProcessToken");
+    return_value = result::FAIL;
+    goto end;
+  }
+
+  if (!CloseHandle(h_current_Process)) {
+    h_current_Process = nullptr;
+    win32_helper::print_error_message(GetLastError(), "CloseHandle");
+    return_value = result::FAIL;
+    goto end;
+  }
+  h_current_Process = nullptr;
+
+
 
   static_assert(
       std::is_same_v<
@@ -165,23 +190,154 @@ result EnableSeTakeOwnershipPrivilege() {
     goto end;
   }
 
+
+  if (!GetTokenInformation(h_current_process_token,
+                           TOKEN_INFORMATION_CLASS::TokenUser, nullptr, 0, &dw_required_size)) {
+    if ((last_error = GetLastError()) != ERROR_INSUFFICIENT_BUFFER) {
+      win32_helper::print_error_message(last_error, "GetTokenInformation");
+      return_value = result::FAIL;
+      goto end;
+    }
+    static_assert(std::is_unsigned_v<decltype(dw_required_size)>);
+    static_assert(std::is_unsigned_v<SIZE_T>);
+    static_assert(sizeof(dw_required_size) < sizeof(SIZE_T));
+    void* pAlloc = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dw_required_size);
+    if (pAlloc == nullptr) {
+      return_value = result::FAIL;
+      goto end;
+    }
+    pTU = helper_std::start_lifetime_as<TOKEN_USER>(pAlloc);
+    if (!GetTokenInformation(h_current_process_token, TOKEN_INFORMATION_CLASS::TokenUser,
+                             pTU, dw_required_size, &dw_required_size)) {
+      win32_helper::print_error_message(GetLastError(), "GetTokenInformation");
+      return_value = result::FAIL;
+      goto end;
+    }
+
+  } else {
+    nowide::cout << "GetTokenInformation succeded apperently, event though a "
+                    "size of zero was passed to it.";
+    return_value = result::FAIL;
+    goto end;
+  }
+
+  *ppTokenUser = pTU;
+  pTU = nullptr;
+
+
 end:
   if (h_current_Process != nullptr)
-    CloseHandle(h_current_Process);
+    return_value = CloseHandle(h_current_Process) ? return_value : result::FAIL;
   if (h_current_process_token != nullptr)
-    CloseHandle(h_current_process_token);
+    return_value =
+        CloseHandle(h_current_process_token) ? return_value : result::FAIL;
+  if (pTU != nullptr)
+    return_value = HeapFree(GetProcessHeap(), 0, static_cast<void *>(pTU))
+                       ? return_value
+                       : result::FAIL;
 
   return return_value;
 }
 
-result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE hToken) {
-  if (result::FAIL == EnableSeTakeOwnershipPrivilege())
-    return result::FAIL;
-  // TODO: Open token with WRITE_OWNER
-  // TODO: overwrite owner with current user
+result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE phToken) {
+
+
+  // https://learn.microsoft.com/en-us/windows/win32/secauthz/taking-object-ownership-in-c--  the trailing dashes/hyphens are part of the URL
+
+  result return_value{result::SUCCESS};
+  HANDLE h_token{nullptr};
+  PSECURITY_DESCRIPTOR pSD{nullptr};
+  PTOKEN_USER pTU{nullptr};
+
+  //if (!AllocateAndInitializeSid(nullptr, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  //                              &pSID_new_owner)) {
+  //  win32_helper::print_error_message(GetLastError(),
+  //                                    "AllocateAndInitializeSid");
+  //  return_value = result::FAIL;
+  //  goto end;
+  //}
+
+  if (result::FAIL == EnableSeTakeOwnershipPrivilegeAndGetUser(&pTU)) {
+    return_value = result::FAIL;
+    goto end;
+  }
+
+  
+  // Open token with WRITE_OWNER
+  if (!OpenProcessToken(hProcess, WRITE_OWNER, &h_token)) {
+    nowide::cout << "process token couldn't be opened with WRITE_OWNER, even "
+                    "though the Privilege SeTakeOwnershipPrivilege is enabled";
+    win32_helper::print_error_message(GetLastError(), "OpenProcess");
+    return_value = result::FAIL;
+    goto end;
+  }
+  
+  // overwrite owner with current user
+ 
+  pSD =
+      (PSECURITY_DESCRIPTOR)LocalAlloc(LPTR, SECURITY_DESCRIPTOR_MIN_LENGTH);
+  if (pSD == nullptr) {
+    win32_helper::print_error_message(GetLastError(), "LocalAlloc");
+    return_value = result::FAIL;
+    goto end;
+  }
+  if (!InitializeSecurityDescriptor(pSD,
+                                    SECURITY_DESCRIPTOR_REVISION)) {
+    win32_helper::print_error_message(GetLastError(),
+                                      "InitializeSecurityDescriptor");
+    return_value = result::FAIL;
+    goto end;
+  }
+
+  if (!SetSecurityDescriptorOwner(pSD, pTU->User.Sid, false)) {
+    win32_helper::print_error_message(GetLastError(),
+                                      "SetSecurityDescriptorOwner");
+    return_value = result::FAIL;
+    goto end;
+  }
+
+  if (!SetKernelObjectSecurity(h_token, OWNER_SECURITY_INFORMATION, pSD)) {
+    win32_helper::print_error_message(GetLastError(),
+                                      "SetKernelObjectSecurity");
+    return_value = result::FAIL;
+    goto end;
+  }
+  if (!CloseHandle(h_token)) {
+    h_token = nullptr;
+    win32_helper::print_error_message(GetLastError(), "CloseHandle");
+    return_value = result::FAIL;
+    goto end;
+  }
+  h_token = nullptr;
+
   // TODO: reopen token with READ_CONTROL | WRITE_DAC
+  if (!OpenProcessToken(hProcess, READ_CONTROL | WRITE_DAC, &h_token)) {
+    nowide::cout << "process token couldn't be opened with READ_CONTROL | "
+                    "WRITE_DAC, even though the ownership was taken.\n";
+    win32_helper::print_error_message(GetLastError(), "OpenProcess");
+    return_value = result::FAIL;
+    goto end;
+  }
+
+
+  
+  
   // TODO: read permissions, modify permissions, so that the current user has access
-  return result::FAIL; // temp
+
+  nowide::cout << "Function is not finished --> result::FAIL\n" << std::flush;
+  return_value = result::FAIL; // not finished implementing this function. TODO: finish
+
+end:
+  if (nullptr != h_token)
+    return_value = CloseHandle(h_token) == TRUE ? return_value : result::FAIL;
+  if (nullptr != pSD)
+    return_value = LocalFree(pSD)==NULL ? return_value : result::FAIL;
+  if (nullptr != pTU)
+    return_value =
+        HeapFree(GetProcessHeap(), 0, pTU) == TRUE ? return_value : result::FAIL;
+
+
+  return return_value;
 }
 
 namespace change_session {
