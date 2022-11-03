@@ -215,8 +215,8 @@ result EnableSeTakeOwnershipPrivilegeAndGetUser(PTOKEN_USER* ppTokenUser) {
     }
 
   } else {
-    nowide::cout << "GetTokenInformation succeded apperently, event though a "
-                    "size of zero was passed to it.";
+    nowide::cout << "GetTokenInformation succeded apperently, even though a "
+                    "size of zero was passed to it.\n" << std::flush;
     return_value = result::FAIL;
     goto end;
   }
@@ -266,7 +266,7 @@ result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE ph
   // Open token with WRITE_OWNER
   if (!OpenProcessToken(hProcess, WRITE_OWNER, &h_token)) {
     nowide::cout << "process token couldn't be opened with WRITE_OWNER, even "
-                    "though the Privilege SeTakeOwnershipPrivilege is enabled";
+                    "though the Privilege SeTakeOwnershipPrivilege is enabled.\n";
     win32_helper::print_error_message(GetLastError(), "OpenProcess");
     return_value = result::FAIL;
     goto end;
