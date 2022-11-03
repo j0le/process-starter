@@ -357,6 +357,8 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
   constexpr DWORD access_required_for_CreateProcessAsUserW =
       TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY;
   //constexpr DWORD access_required_for_CreateProcessAsUserW = MAXIMUM_ALLOWED;
+  DWORD access{};
+  bool b_dupplicate_token{false};
   wchar_t lpDesktop[] = L"";
   result return_value = result::SUCCESS;
   HANDLE h_proc = nullptr;
@@ -409,16 +411,6 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
     goto end;
   }
 
-  if (!OpenProcessToken(h_proc, TOKEN_DUPLICATE,
-                        &h_token)) {
-    win32_helper::print_error_message(GetLastError(), "OpenProcessToken");
-    if (result::FAIL == TakeOwnerShipOfProcessTokenAndAsignFullAccess(h_proc,&h_token)) {
-
-      return_value = result::FAIL;
-      goto end;
-    }
-  }
-
   if (!std::holds_alternative<change_session::dont_change_session>(
           change_sess)) {
     if (std::holds_alternative<change_session::active_console_session>(
@@ -440,6 +432,26 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
                  << active_console_session_id << "\n"
                  << std::flush;
 
+    b_dupplicate_token = true;
+  }
+
+  if (b_dupplicate_token) {
+    access = TOKEN_DUPLICATE;
+  } else {
+    access = access_required_for_CreateProcessAsUserW;
+  }
+
+  if (!OpenProcessToken(h_proc, access, &h_token)) {
+    win32_helper::print_error_message(GetLastError(), "OpenProcessToken");
+    if (result::FAIL ==
+        TakeOwnerShipOfProcessTokenAndAsignFullAccess(h_proc, &h_token)) {
+
+      return_value = result::FAIL;
+      goto end;
+    }
+  }
+
+  if (b_dupplicate_token) {
     if (!DuplicateTokenEx(h_token, MAXIMUM_ALLOWED, nullptr,
                           SECURITY_IMPERSONATION_LEVEL::SecurityDelegation,
                           TOKEN_TYPE::TokenPrimary, &h_duplicated_token)) {
@@ -453,6 +465,10 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
     // move new handle value to variable of old handle
     h_token = h_duplicated_token;
     h_duplicated_token = nullptr;
+  }
+
+  if (!std::holds_alternative<change_session::dont_change_session>(
+          change_sess)) {
 
     if (!SetTokenInformation(h_token, TOKEN_INFORMATION_CLASS::TokenSessionId,
                              &active_console_session_id,
