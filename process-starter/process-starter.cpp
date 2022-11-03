@@ -69,7 +69,7 @@
 namespace helper_std {
 // https://youtu.be/pbkQG09grFw?t=1442
 // https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2022/p2590r2.pdf
-#if !defined(__cpp_lib_start_lifetime_at)
+#if !defined(__cpp_lib_start_lifetime_as)
 static_assert(__cplusplus == _MSVC_LANG);
 static_assert(__cplusplus >= 202002L);
 template <typename T> T *start_lifetime_as(void *p) noexcept {
