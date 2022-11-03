@@ -340,6 +340,12 @@ end:
   return return_value;
 }
 
+enum class cmd_decision {
+  no,
+  as_required,
+  yes
+};
+
 namespace change_session {
 typedef DWORD session_id_t;
 static_assert(
@@ -353,12 +359,12 @@ typedef std::variant<session_id_t, active_console_session, dont_change_session>
 result start_process_via_OpenProcessToken(DWORD proc_id,
                                           std::optional<std::string_view> prog_name,
                                           std::optional<std::string_view> cmd_line,
-                                          change_session::var change_sess) {
+                                          change_session::var change_sess,
+                                          cmd_decision cmd_decs_dup_token) {
   constexpr DWORD access_required_for_CreateProcessAsUserW =
       TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY;
   //constexpr DWORD access_required_for_CreateProcessAsUserW = MAXIMUM_ALLOWED;
   DWORD access{};
-  bool b_dupplicate_token{false};
   wchar_t lpDesktop[] = L"";
   result return_value = result::SUCCESS;
   HANDLE h_proc = nullptr;
@@ -431,11 +437,23 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
     nowide::cout << "The ID of the active console session is "
                  << active_console_session_id << "\n"
                  << std::flush;
-
-    b_dupplicate_token = true;
+    switch (cmd_decs_dup_token) {
+    case cmd_decision::no:
+      nowide::cout
+          << "Error: dupplicating tokens is not allowed as per cmd decision. "
+             "But it is required for setting the session id.\n";
+      return_value = result::FAIL;
+      goto end;
+      break;
+    
+    case cmd_decision::as_required:
+    case cmd_decision::yes:
+      cmd_decs_dup_token = cmd_decision::yes;
+      break;
+    }
   }
 
-  if (b_dupplicate_token) {
+  if (cmd_decs_dup_token == cmd_decision::yes) {
     access = TOKEN_DUPLICATE;
   } else {
     access = access_required_for_CreateProcessAsUserW;
@@ -451,7 +469,7 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
     }
   }
 
-  if (b_dupplicate_token) {
+  if (cmd_decs_dup_token == cmd_decision::yes) {
     if (!DuplicateTokenEx(h_token, MAXIMUM_ALLOWED, nullptr,
                           SECURITY_IMPERSONATION_LEVEL::SecurityDelegation,
                           TOKEN_TYPE::TokenPrimary, &h_duplicated_token)) {
@@ -579,6 +597,7 @@ int main(int argc, char **argv) {
   std::optional<std::string_view> program_name{std::nullopt};
   std::optional<std::string_view> cmd_line{std::nullopt};
   change_session::var change_sess{change_session::dont_change_session{}};
+  cmd_decision duplicate_token{cmd_decision::as_required};
 
   constexpr std::string_view OPT_PID{"--pid"};
   constexpr std::string_view OPT_PROGFROM("--process-copy-from");
@@ -586,6 +605,7 @@ int main(int argc, char **argv) {
   constexpr std::string_view OPT_CMDLINE{"--cmd-line"};
   constexpr std::string_view OPT_DEBUG{"--debug"};
   constexpr std::string_view OPT_WT_SESSION{"--wt-session"};
+  constexpr std::string_view OPT_DUP_TOKEN{"--dup-token"};
 
   constexpr std::string_view quote_open{"\xC2\xBB"};  // >> U+00BB
   constexpr std::string_view quote_close{"\xC2\xAB"}; // << U+00AB
@@ -635,6 +655,29 @@ int main(int argc, char **argv) {
                      << std::endl;
         return 1;
       }
+    } else if (OPT_DUP_TOKEN == argv[i]) {
+      if (next_available) {
+        ++i;
+        if (std::string_view{"yes"} == argv[i]) {
+          duplicate_token = cmd_decision::yes;
+        } else if (std::string_view{"no"} == argv[i]) {
+          duplicate_token = cmd_decision::no;
+        } else if (std::string_view{"as-required"} == argv[i]) {
+          duplicate_token = cmd_decision::as_required;
+        } else {
+          nowide::cout << "Error: value for option " << quote_open
+                       << OPT_DUP_TOKEN << quote_close << " is neither "
+                       << quote_open << "yes" << quote_close << " nor "
+                       << quote_open << "no" << quote_close << " nor "
+                       << quote_open << "as-required" << quote_close << ".\n"
+                       << std::flush;
+          return 1;
+        }
+      } else {
+        nowide::cout << "argument missing for \"" << OPT_DUP_TOKEN << "\""
+                     << std::endl;
+        return 1;
+      }
     } else if (OPT_WT_SESSION == argv[i]) {
       if (next_available) {
         ++i;
@@ -656,7 +699,7 @@ int main(int argc, char **argv) {
                          << OPT_WT_SESSION << quote_close << " is neither "
                          << quote_open << "active" << quote_close << " nor "
                          << quote_open << "not-specified" << quote_close
-                         << "nor a number,\n"
+                         << " nor a number.\n"
                          << std::flush;
             return 1;
           } else {
@@ -710,7 +753,7 @@ int main(int argc, char **argv) {
                << std::endl;
 
   if (result::FAIL ==
-      start_process_via_OpenProcessToken(proc_id, program_name, cmd_line, change_sess))
+      start_process_via_OpenProcessToken(proc_id, program_name, cmd_line, change_sess, duplicate_token))
     return 1;
 
   nowide::cout << "It should have worked." << std::endl;
