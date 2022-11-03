@@ -510,8 +510,14 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
           /*lpCurrentDirectory*/ nullptr, /*lpStartupInfo*/ &startup_info,
           /*lpProcessInformation*/ &process_infos)) {
     win32_helper::print_error_message(GetLastError(), "CreateProcessAsUserW");
-    return_value = result::FAIL;
-    goto end;
+
+    if (!CreateProcessWithTokenW(h_token, 0, prog_name_const_w_str_ptr,
+                                 cmd_line_buf.get(), 0, nullptr, nullptr,
+                                 &startup_info, &process_infos)) {
+      win32_helper::print_error_message(GetLastError(), "CreateProcessWithTokenW");
+      return_value = result::FAIL;
+      goto end;
+    }
   }
   CloseHandle(process_infos.hProcess);
   CloseHandle(process_infos.hThread);
