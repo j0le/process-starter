@@ -692,6 +692,20 @@ int main(int argc, char **argv) {
   constexpr std::string_view quote_open{"\xC2\xBB"};  // >> U+00BB
   constexpr std::string_view quote_close{"\xC2\xAB"}; // << U+00AB
 
+  std::string our_cmd_line = nowide::narrow(GetCommandLineW());
+
+  nowide::cout << "\n"
+               << "CommandLine: " << quote_open << our_cmd_line << quote_close
+               << "\n\n"
+               << "Arguments: \n";
+
+  for (int i = 0; i < argc; i++) {
+    nowide::cout << "arg " << i << ": " << quote_open << argv[i] << quote_close
+                 << "\n";
+  }
+
+  nowide::cout << "\n" << std::flush;
+
   for (int i = 1; i < argc; i++) {
     bool next_available = i + 1 < argc;
     if (OPT_PID == argv[i]) {
