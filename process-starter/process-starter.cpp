@@ -516,7 +516,7 @@ result start_process_via_OpenProcessToken(DWORD proc_id,
           std::get<change_session::session_id_t>(change_sess);
     }
 
-    nowide::cout << "The ID of the active console session is "
+    nowide::cout << "The new session ID should be "
                  << active_console_session_id << "\n"
                  << std::flush;
     switch (cmd_decs_dup_token) {
