@@ -52,6 +52,8 @@
 
 #include <Windows.h>
 #include <TlHelp32.h>
+#include <aclapi.h>
+
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -246,8 +248,15 @@ result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE ph
 
   result return_value{result::SUCCESS};
   HANDLE h_token{nullptr};
-  PSECURITY_DESCRIPTOR pSD{nullptr};
+  PSECURITY_DESCRIPTOR pSD_for_owner{nullptr};
+  PSECURITY_DESCRIPTOR pSD_for_DACL_old{nullptr};
   PTOKEN_USER pTU{nullptr};
+  PACL pDacl_old{nullptr};
+  PACL pDacl_new{nullptr};
+  DWORD last_error{0};
+
+  static constexpr const int number_of_ea_entries = 1;
+  EXPLICIT_ACCESSW eas[number_of_ea_entries]{};
 
   //if (!AllocateAndInitializeSid(nullptr, 0, 0, 0, 0, 0, 0, 0, 0, 0,
   //                              &pSID_new_owner)) {
@@ -274,14 +283,14 @@ result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE ph
   
   // overwrite owner with current user
  
-  pSD =
+  pSD_for_owner =
       (PSECURITY_DESCRIPTOR)LocalAlloc(LPTR, SECURITY_DESCRIPTOR_MIN_LENGTH);
-  if (pSD == nullptr) {
+  if (pSD_for_owner == nullptr) {
     win32_helper::print_error_message(GetLastError(), "LocalAlloc");
     return_value = result::FAIL;
     goto end;
   }
-  if (!InitializeSecurityDescriptor(pSD,
+  if (!InitializeSecurityDescriptor(pSD_for_owner,
                                     SECURITY_DESCRIPTOR_REVISION)) {
     win32_helper::print_error_message(GetLastError(),
                                       "InitializeSecurityDescriptor");
@@ -289,14 +298,14 @@ result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE ph
     goto end;
   }
 
-  if (!SetSecurityDescriptorOwner(pSD, pTU->User.Sid, false)) {
+  if (!SetSecurityDescriptorOwner(pSD_for_owner, pTU->User.Sid, false)) {
     win32_helper::print_error_message(GetLastError(),
                                       "SetSecurityDescriptorOwner");
     return_value = result::FAIL;
     goto end;
   }
 
-  if (!SetKernelObjectSecurity(h_token, OWNER_SECURITY_INFORMATION, pSD)) {
+  if (!SetKernelObjectSecurity(h_token, OWNER_SECURITY_INFORMATION, pSD_for_owner)) {
     win32_helper::print_error_message(GetLastError(),
                                       "SetKernelObjectSecurity");
     return_value = result::FAIL;
@@ -310,7 +319,7 @@ result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE ph
   }
   h_token = nullptr;
 
-  // TODO: reopen token with READ_CONTROL | WRITE_DAC
+  // reopen token with READ_CONTROL | WRITE_DAC
   if (!OpenProcessToken(hProcess, READ_CONTROL | WRITE_DAC, &h_token)) {
     nowide::cout << "process token couldn't be opened with READ_CONTROL | "
                     "WRITE_DAC, even though the ownership was taken.\n";
@@ -319,19 +328,67 @@ result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE ph
     goto end;
   }
 
+  // TODO: read permissions, modify permissions, so that the current user has
+  // access
+  // https://learn.microsoft.com/en-us/windows/win32/secauthz/creating-or-modifying-an-acl
+  last_error = GetSecurityInfo(h_token, SE_OBJECT_TYPE::SE_KERNEL_OBJECT,
+                               DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                               &pDacl_old, nullptr, &pSD_for_DACL_old);
+  if (last_error != ERROR_SUCCESS) {
+    win32_helper::print_error_message(last_error, "GetSecurityInfo");
+    return_value = result::FAIL;
+    goto end;
+  }
 
-  
-  
-  // TODO: read permissions, modify permissions, so that the current user has access
+  {
+    EXPLICIT_ACCESSW &ea = eas[0];
+    ea.grfAccessPermissions = TOKEN_ALL_ACCESS;
+    ea.grfAccessMode = ::ACCESS_MODE::GRANT_ACCESS;
+    ea.grfInheritance = NO_INHERITANCE;
+    ea.Trustee.pMultipleTrustee = nullptr;
+    ea.Trustee.MultipleTrusteeOperation =
+        ::MULTIPLE_TRUSTEE_OPERATION::NO_MULTIPLE_TRUSTEE;
+    ea.Trustee.TrusteeForm = ::TRUSTEE_FORM::TRUSTEE_IS_SID;
+    ea.Trustee.TrusteeType = ::TRUSTEE_TYPE::TRUSTEE_IS_UNKNOWN;
+  }
+  static_assert(number_of_ea_entries == 1);
 
-  nowide::cout << "Function is not finished --> result::FAIL\n" << std::flush;
-  return_value = result::FAIL; // not finished implementing this function. TODO: finish
+  // SetEntriesInAclW adds ACEs at the beginning of the DACL
+  last_error = SetEntriesInAclW(number_of_ea_entries, eas, pDacl_old, &pDacl_new);
+  if (last_error != ERROR_SUCCESS) {
+    win32_helper::print_error_message(last_error, "SetEntriesInAclW");
+    return_value = result::FAIL;
+    goto end;
+  }
+  pDacl_old = nullptr; // We dont need this pointer anymore. pDacl_old points to a place in *pSD_for_DACL_old.
+
+  last_error = SetSecurityInfo(h_token, ::SE_OBJECT_TYPE::SE_KERNEL_OBJECT,
+                               DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                               pDacl_new, nullptr);
+  if (last_error != ERROR_SUCCESS) {
+    win32_helper::print_error_message(last_error, "SetSecurityInfo");
+    return_value = result::FAIL;
+    goto end;
+  }
+  
+  // Instead of SetEntriesInAclW we could also use AddAccessAllowedAceEx
+
 
 end:
   if (nullptr != h_token)
     return_value = CloseHandle(h_token) == TRUE ? return_value : result::FAIL;
-  if (nullptr != pSD)
-    return_value = LocalFree(pSD)==NULL ? return_value : result::FAIL;
+
+  if (nullptr != pSD_for_owner)
+    return_value = LocalFree(pSD_for_owner)==NULL ? return_value : result::FAIL;
+
+  if (nullptr != pSD_for_DACL_old)
+    return_value =
+        LocalFree(pSD_for_DACL_old) == NULL ? return_value : result::FAIL;
+
+  if (nullptr!= pDacl_new)
+    return_value =
+        LocalFree(pDacl_new) == NULL ? return_value : result::FAIL;
+
   if (nullptr != pTU)
     return_value =
         HeapFree(GetProcessHeap(), 0, pTU) == TRUE ? return_value : result::FAIL;
