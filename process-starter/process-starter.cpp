@@ -345,11 +345,15 @@ result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE ph
     ea.grfAccessPermissions = TOKEN_ALL_ACCESS;
     ea.grfAccessMode = ::ACCESS_MODE::GRANT_ACCESS;
     ea.grfInheritance = NO_INHERITANCE;
-    ea.Trustee.pMultipleTrustee = nullptr;
-    ea.Trustee.MultipleTrusteeOperation =
-        ::MULTIPLE_TRUSTEE_OPERATION::NO_MULTIPLE_TRUSTEE;
-    ea.Trustee.TrusteeForm = ::TRUSTEE_FORM::TRUSTEE_IS_SID;
-    ea.Trustee.TrusteeType = ::TRUSTEE_TYPE::TRUSTEE_IS_UNKNOWN;
+    //ea.Trustee.pMultipleTrustee = nullptr;
+    //ea.Trustee.MultipleTrusteeOperation =
+    //    ::MULTIPLE_TRUSTEE_OPERATION::NO_MULTIPLE_TRUSTEE;
+    //ea.Trustee.TrusteeForm = ::TRUSTEE_FORM::TRUSTEE_IS_SID;
+    //ea.Trustee.TrusteeType = ::TRUSTEE_TYPE::TRUSTEE_IS_UNKNOWN;
+    //ea.Trustee.ptstrName =
+    //    static_cast<decltype(ea.Trustee.ptstrName)>(pTU->User.Sid);
+
+    BuildTrusteeWithSidW(&ea.Trustee, pTU->User.Sid);
   }
   static_assert(number_of_ea_entries == 1);
 
