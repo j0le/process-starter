@@ -254,6 +254,7 @@ result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE ph
   PACL pDacl_old{nullptr};
   PACL pDacl_new{nullptr};
   DWORD last_error{0};
+  static constexpr const DWORD access = TOKEN_ALL_ACCESS;
 
   static constexpr const int number_of_ea_entries = 1;
   EXPLICIT_ACCESSW eas[number_of_ea_entries]{};
@@ -265,6 +266,11 @@ result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE ph
   //  return_value = result::FAIL;
   //  goto end;
   //}
+
+  if (phToken == nullptr) {
+    return_value = result::FAIL;
+    goto end;
+  }
 
   if (result::FAIL == EnableSeTakeOwnershipPrivilegeAndGetUser(&pTU)) {
     return_value = result::FAIL;
@@ -328,8 +334,7 @@ result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE ph
     goto end;
   }
 
-  // TODO: read permissions, modify permissions, so that the current user has
-  // access
+  // read permissions, modify permissions, so that the current user has access
   // https://learn.microsoft.com/en-us/windows/win32/secauthz/creating-or-modifying-an-acl
   last_error = GetSecurityInfo(h_token, SE_OBJECT_TYPE::SE_KERNEL_OBJECT,
                                DACL_SECURITY_INFORMATION, nullptr, nullptr,
@@ -342,7 +347,7 @@ result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE ph
 
   {
     EXPLICIT_ACCESSW &ea = eas[0];
-    ea.grfAccessPermissions = TOKEN_ALL_ACCESS;
+    ea.grfAccessPermissions = access;
     ea.grfAccessMode = ::ACCESS_MODE::GRANT_ACCESS;
     ea.grfInheritance = NO_INHERITANCE;
     //ea.Trustee.pMultipleTrustee = nullptr;
@@ -366,6 +371,7 @@ result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE ph
   }
   pDacl_old = nullptr; // We dont need this pointer anymore. pDacl_old points to a place in *pSD_for_DACL_old.
 
+  // Instead of SetEntriesInAclW we could also use AddAccessAllowedAceEx
   last_error = SetSecurityInfo(h_token, ::SE_OBJECT_TYPE::SE_KERNEL_OBJECT,
                                DACL_SECURITY_INFORMATION, nullptr, nullptr,
                                pDacl_new, nullptr);
@@ -375,7 +381,22 @@ result TakeOwnerShipOfProcessTokenAndAsignFullAccess(HANDLE hProcess, PHANDLE ph
     goto end;
   }
   
-  // Instead of SetEntriesInAclW we could also use AddAccessAllowedAceEx
+  if (!CloseHandle(h_token)) {
+    h_token = nullptr;
+    win32_helper::print_error_message(GetLastError(), "CloseHandle");
+    return_value = result::FAIL;
+    goto end;
+  }
+  h_token = nullptr;
+  *phToken = nullptr;
+
+  if (!OpenProcessToken(hProcess, access, phToken)) {
+    nowide::cout << "process token couldn't be opened with TOKEN_ALL_ACCESS, "
+                    "even though the an ACE with that access was added.\n";
+    win32_helper::print_error_message(GetLastError(), "OpenProcess");
+    return_value = result::FAIL;
+    goto end;
+  }
 
 
 end:
