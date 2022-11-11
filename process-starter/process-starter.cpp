@@ -815,6 +815,27 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (cmd_line.has_value()) {
+    auto u8_str = cmd_line.value();
+    if (!u8_str.empty()) {
+      int num_args{0};
+      auto u16_str = nowide::widen(u8_str);
+      auto args = CommandLineToArgvW(u16_str.c_str(), &num_args);
+      if (args != nullptr) {
+        nowide::cout << "\n"
+                     << "The commandline (of the program to call) splitted "
+                        "into arguments:\n";
+        for (int i = 0; i < num_args; ++i) {
+          auto u8_arg = nowide::narrow(args[i]);
+          nowide::cout << "  arg " << i << ": " << quote_open << u8_arg
+                       << quote_close << "\n";
+        }
+        nowide::cout << "\n" << std::flush;
+        LocalFree(args);
+      }
+    }
+  }
+
   if (debug) {
     using namespace std::chrono_literals;
     while (!IsDebuggerPresent()) {
