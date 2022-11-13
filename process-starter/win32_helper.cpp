@@ -12,12 +12,19 @@
 #endif
 
 constexpr const char8_t UTF_8_test_1[] = u8"ü";
+static_assert(sizeof(UTF_8_test_1) == 3);
+static_assert(UTF_8_test_1[0] == static_cast<char8_t>(0xC3u));
+static_assert(UTF_8_test_1[1] == static_cast<char8_t>(0xBCu));
+static_assert(UTF_8_test_1[2] == static_cast<char8_t>(0x0u));
+
 constexpr const char UTF_8_test_2[] = "ü";
-static_assert(sizeof(UTF_8_test_1) == sizeof(UTF_8_test_2));
 static_assert(sizeof(UTF_8_test_2) == 3);
-static_assert(UTF_8_test_2[0] == static_cast<char>(0xC3));
-static_assert(UTF_8_test_2[1] == static_cast<char>(0xBC));
-static_assert(UTF_8_test_2[2] == 0);
+static_assert(UTF_8_test_2[0] == static_cast<char>(0xC3u));
+static_assert(UTF_8_test_2[1] == static_cast<char>(0xBCu));
+static_assert(UTF_8_test_2[2] == static_cast<char>(0x0u));
+
+
+static_assert(sizeof(UTF_8_test_1) == sizeof(UTF_8_test_2));
 
 static_assert(TRUE == true);
 static_assert(FALSE == false);
