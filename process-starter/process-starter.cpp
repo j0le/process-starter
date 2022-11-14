@@ -87,21 +87,38 @@ template <typename T> T *start_lifetime_as(void *p) noexcept {
 
 namespace process_starter {
 
-DWORD GetProcId(const std::string_view procName_utf8) {
+enum class GetProcId_result {
+    proc_found,
+    name_to_long,
+    proc_not_found,
+    fail_to_create_snapshot,
+};
+
+GetProcId_result GetProcId(const std::string_view procName_utf8, DWORD &procId) {
 
   std::wstring procName = nowide::widen(procName_utf8);
-  DWORD procId = 0;
   HANDLE hSnap = nullptr;
   PROCESSENTRY32 procEntry{};
   procEntry.dwSize = sizeof(procEntry);
+  int name_length_includeing_terminatig_nul{0};
+  GetProcId_result result{GetProcId_result::proc_not_found};
 
   assert(procName.data()[procName.length() - 1 + 1] == L'\0');
+
+  if ((sizeof(size_t) > sizeof(int)) &&
+      (procName.length() + 1) > static_cast<size_t>(INT_MAX)) {
+    nowide::cout << "process name to long" << std::endl;
+    result = GetProcId_result::name_to_long;
+    goto exit;
+  }
+  name_length_includeing_terminatig_nul =
+      static_cast<int>(procName.length() + 1);
 
   hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 
   if (hSnap == INVALID_HANDLE_VALUE) {
     nowide::cout << "Cannot create snapshot of process list" << std::endl;
-    std::exit(1);
+    result = GetProcId_result::fail_to_create_snapshot;
     goto exit;
   }
 
@@ -110,9 +127,11 @@ DWORD GetProcId(const std::string_view procName_utf8) {
 
   do {
     if (CSTR_EQUAL == CompareStringW(LOCALE_INVARIANT, NORM_IGNORECASE,
-                                     procName.data(), procName.length() + 1,
+                                     procName.data(),
+                                     name_length_includeing_terminatig_nul,
                                      procEntry.szExeFile, -1)) {
       procId = procEntry.th32ProcessID;
+      result = GetProcId_result::proc_found;
       break;
     }
   } while (Process32NextW(hSnap, &procEntry));
@@ -120,7 +139,7 @@ DWORD GetProcId(const std::string_view procName_utf8) {
 close_hSnap:
   CloseHandle(hSnap);
 exit:
-  return procId;
+  return result;
 }
 
 enum class result : bool { FAIL = false, SUCCESS = true };
@@ -878,9 +897,11 @@ Usage:
                  << pn << "\".\n"
                  << std::flush;
     while (true) {
-      proc_id = GetProcId(pn);
-      if (proc_id != 0)
+      auto result = GetProcId(pn, proc_id);
+      if (result == GetProcId_result::proc_found)
         break;
+      if (result != GetProcId_result::proc_not_found)
+        return 1;
       Sleep(30);
     }
   }
