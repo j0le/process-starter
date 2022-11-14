@@ -689,6 +689,17 @@ int main(int argc, char **argv) {
   constexpr std::string_view OPT_WT_SESSION{"--wt-session"};
   constexpr std::string_view OPT_DUP_TOKEN{"--dup-token"};
 
+  constexpr std::string_view help_options[]{"--help", "-help", "help", "-h",
+                                            "/help",  "/h",    "-?",   "/?"};
+
+  constexpr std::string_view help_text{R"(
+Usage:
+
+  process-starter.exe [--program-name <path>] [--cmd-line <commandline>] [--pid <PID> | --process-copy-from <name>] [--debug] [--wt-session {active|not-specified|<session id>}] [--dup-token {yes|no|as-required}]
+  
+  process-starter.exe --help
+)"};
+
   constexpr std::string_view quote_open{"\xC2\xBB"};  // >> U+00BB
   constexpr std::string_view quote_close{"\xC2\xAB"}; // << U+00AB
 
@@ -708,6 +719,14 @@ int main(int argc, char **argv) {
 
   for (int i = 1; i < argc; i++) {
     bool next_available = i + 1 < argc;
+
+    for (auto help_opt : help_options) {
+      if (argv[i] == help_opt) {
+        nowide::cout << help_text << std::flush;
+        return 0;
+      }
+    }
+
     if (OPT_PID == argv[i]) {
       if (next_available) {
         uint32_t number = 0;
